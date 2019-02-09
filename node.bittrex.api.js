@@ -7,7 +7,7 @@
  * Released under the MIT License
  * ============================================================ */
 
-var NodeBittrexApi = function(options) {
+var NodeBittrexApi = function() {
   'use strict';
 
   var request = require('request'),
@@ -37,10 +37,6 @@ var NodeBittrexApi = function(options) {
     verbose: false,
     cleartext: false,
     inverse_callback_arguments: false,
-    websockets: {
-      autoReconnect: true,
-    },
-    requestTimeoutInSeconds: 15,
   };
 
   var lastNonces = [];
@@ -48,8 +44,9 @@ var NodeBittrexApi = function(options) {
   var getNonce = function() {
     var nonce = new Date().getTime();
 
-    while (lastNonces.indexOf(nonce) > -1) {
-      nonce = new Date().getTime(); // Repetition of the above. This can probably done better :-)
+    if (lastNonces.indexOf(nonce) > -1) {
+      // we already used this nonce so keep trying to get a new one.
+      return getNonce();
     }
 
     // keep the last X to try ensure we don't have collisions even if the clock is adjusted
@@ -67,10 +64,6 @@ var NodeBittrexApi = function(options) {
       opts[o[i]] = options[o[i]];
     }
   };
-
-  if (options) {
-    extractOptions(options);
-  }
 
   var apiCredentials = function(uri) {
     var options = {
@@ -99,7 +92,7 @@ var NodeBittrexApi = function(options) {
 
     op.headers.apisign = hmac_sha512.HmacSHA512(uri, opts.apisecret); // setting the HMAC hash `apisign` http header
     op.uri = uri;
-    op.timeout = opts.requestTimeoutInSeconds * 1000;
+    op.timeout = 15000;
 
     return op;
   };
@@ -133,10 +126,8 @@ var NodeBittrexApi = function(options) {
           callback(errorObj, null) :
           callback(null, errorObj));
       } else {
-        try {
-          result = JSON.parse(body);
-        } catch (err) {}
-        if (!result || !result.success) {
+        result = JSON.parse(body);
+        if (!result.success) {
           // error returned by bittrex API - forward the result as an error
           return ((opts.inverse_callback_arguments) ?
             callback(result, null) :
@@ -164,197 +155,81 @@ var NodeBittrexApi = function(options) {
     sendRequestCallback(callback, options);
   };
 
-  var websocketGlobalTickers = false;
-  var websocketGlobalTickerCallback;
-  var websocketMarkets = [];
-  var websocketMarketsCallbacks = [];
-  var websocketLastMessage = (new Date()).getTime();
-  var websocketWatchDog = undefined;
-
-  var resetWs = function() {
-    websocketGlobalTickers = false;
-    websocketGlobalTickerCallback = undefined;
-    websocketMarkets = [];
-    websocketMarketsCallbacks = [];
-  };
-
-  var connectws = function(callback, force) {
-    if (wsclient && !force && callback) {
+  var connectws = function(callback) {
+    if (wsclient) {
       return callback(wsclient);
     }
-
-    if (force) {
-      try { wsclient.end(); } catch (e) {}
-    }
-    
-    if (!websocketWatchDog) {
-      websocketWatchDog = setInterval(function() {
-        if (!wsclient) {
-          return;
-        }
-
-        if (
-          opts.websockets &&
-          (
-            opts.websockets.autoReconnect === true ||
-            typeof(opts.websockets.autoReconnect) === 'undefined'
-          )
-        ) {
-          var now = (new Date()).getTime();
-          var diff = now - websocketLastMessage;
-  
-          if (diff > 60 * 1000) {
-            ((opts.verbose) ? console.log('Websocket Watch Dog: Websocket has not received communication for over 1 minute. Forcing reconnection. Ruff!') : '');
-            connectws(callback, true);
-          } else {
-            ((opts.verbose) ? console.log('Websocket Watch Dog: Last message received '+diff+'ms ago. Ruff!') : '');
-          }
-        }
-      }, 5 * 1000);
-    }
-
     cloudscraper.get('https://bittrex.com/', function(error, response, body) {
       if (error) {
         console.error('Cloudscraper error occurred');
         console.error(error);
-        return;
-      }
-
-      opts.headers = {
-        cookie: (response.request.headers["cookie"] || ''),
-        user_agent: (response.request.headers["User-Agent"] || '')
-      };
-
-      wsclient = new signalR.client(
-        opts.websockets_baseurl,
-        opts.websockets_hubs,
-       undefined,
-       true
-      );
-
-      if (opts.headers) {
-        wsclient.headers['User-Agent'] = opts.headers.user_agent;
-        wsclient.headers['cookie'] = opts.headers.cookie;
-      }
-
-      wsclient.start();
-      wsclient.serviceHandlers = {
-        bound: function() {
-          ((opts.verbose) ? console.log('Websocket bound') : '');
-          if (opts.websockets && typeof(opts.websockets.onConnect) === 'function') {
-            resetWs();
-            opts.websockets.onConnect();
-          }
-        },
-        connectFailed: function(error) {
-          ((opts.verbose) ? console.log('Websocket connectFailed: ', error) : '');
-        },
-        disconnected: function() {
-          ((opts.verbose) ? console.log('Websocket disconnected') : '');
-          if (opts.websockets && typeof(opts.websockets.onDisconnect) === 'function') {
-            opts.websockets.onDisconnect();
-          }
-
-          if (
-            opts.websockets &&
-            (
-              opts.websockets.autoReconnect === true ||
-              typeof(opts.websockets.autoReconnect) === 'undefined'
-            )
-          ) {
-            ((opts.verbose) ? console.log('Websocket auto reconnecting.') : '');
-            wsclient.start(); // ensure we try reconnect
-          } else {
-            // otherwise, clear the watchdog interval if necessary
-            if (websocketWatchDog) {
-              clearInterval(websocketWatchDog);
-              websocketWatchDog = null;
+      } else {
+        opts.headers = {
+          cookie: (response.request.headers["cookie"] || ''),
+          user_agent: (response.request.headers["User-Agent"] || '')
+        };
+        wsclient = new signalR.client(
+          opts.websockets_baseurl,
+          opts.websockets_hubs,
+         undefined,
+         true
+        );
+        if (opts.headers) {
+          wsclient.headers['User-Agent'] = opts.headers.user_agent;
+          wsclient.headers['cookie'] = opts.headers.cookie;
+        }
+        wsclient.start();
+        wsclient.serviceHandlers = {
+          bound: function() {
+            ((opts.verbose) ? console.log('Websocket bound') : '');
+            if (opts.websockets && typeof(opts.websockets.onConnect) === 'function') {
+              opts.websockets.onConnect();
             }
+          },
+          connectFailed: function(error) {
+            ((opts.verbose) ? console.log('Websocket connectFailed: ', error) : '');
+          },
+          disconnected: function() {
+            ((opts.verbose) ? console.log('Websocket disconnected') : '');
+            if (opts.websockets && typeof(opts.websockets.onDisconnect) === 'function') {
+              opts.websockets.onDisconnect();
+            }
+            wsclient.start(); // ensure we try reconnect
+          },
+          onerror: function(error) {
+            ((opts.verbose) ? console.log('Websocket onerror: ', error) : '');
+          },
+          bindingError: function(error) {
+            ((opts.verbose) ? console.log('Websocket bindingError: ', error) : '');
+          },
+          connectionLost: function(error) {
+            ((opts.verbose) ? console.log('Connection Lost: ', error) : '');
+          },
+          reconnecting: function(retry) {
+            ((opts.verbose) ? console.log('Websocket Retrying: ', retry) : '');
+            // change to true to stop retrying
+            return false;
           }
-        },
-        onerror: function(error) {
-          ((opts.verbose) ? console.log('Websocket onerror: ', error) : '');
-        },
-        bindingError: function(error) {
-          ((opts.verbose) ? console.log('Websocket bindingError: ', error) : '');
-        },
-        connectionLost: function(error) {
-          ((opts.verbose) ? console.log('Connection Lost: ', error) : '');
-        },
-        reconnecting: function(retry) {
-          // Disabled in 0.8.3
-          // Websocket reconnection is now handled by the library. Enabling this
-          // can cause double connections.
-          //
-          // ((opts.verbose) ? console.log('Websocket Retrying: ', retry) : '');
-          // change to true to stop retrying
-          return true;
-        },
-        connected: function() {
-          if (websocketGlobalTickers) {
-            wsclient.call('CoreHub', 'SubscribeToSummaryDeltas').done(function(err, result) {
-              if (err) {
-                return console.error(err);
-              }
-
-              if (result === true) {
-                ((opts.verbose) ? console.log('Subscribed to global tickers') : '');
-              }
-            });
-          }
-
-          if (websocketMarkets.length > 0) {
-            websocketMarkets.forEach(function(market) {
-              wsclient.call('CoreHub', 'SubscribeToExchangeDeltas', market).done(function(err, result) {
-                if (err) {
-                  return console.error(err);
-                }
-
-                if (result === true) {
-                  ((opts.verbose) ? console.log('Subscribed to ' + market) : '');
-                }
-              });
-            });
-          }
-          ((opts.verbose) ? console.log('Websocket connected') : '');
-        },
-      };
-
-      if (callback) {
-        callback(wsclient);
+        };
+        if (callback) {
+          callback(wsclient);
+        }
       }
-      
-    }, opts.cloudscraper_headers || {});
-
+    });
     return wsclient;
   };
 
-  var setMessageReceivedWs = function() {
+  var setMessageReceivedWs = function(callback) {
     wsclient.serviceHandlers.messageReceived = function(message) {
-      websocketLastMessage = (new Date()).getTime();
       try {
         var data = jsonic(message.utf8Data);
         if (data && data.M) {
           data.M.forEach(function(M) {
-            if (websocketGlobalTickerCallback) {
-              websocketGlobalTickerCallback(M, wsclient);
-            }
-            if (websocketMarketsCallbacks.length > 0) {
-              websocketMarketsCallbacks.forEach(function(callback) {
-                callback(M, wsclient);
-              });
-            }
+            callback(M, wsclient);
           });
         } else {
           // ((opts.verbose) ? console.log('Unhandled data', data) : '');
-          if (websocketGlobalTickerCallback) {
-            websocketGlobalTickerCallback({'unhandled_data' : data}, wsclient);
-          }
-          if (websocketMarketsCallbacks.length > 0) {
-            websocketMarketsCallbacks.forEach(function(callback) {
-              callback({'unhandled_data' : data}, wsclient);
-            });
-          }
+          callback({'unhandled_data' : data}, wsclient);
         }
       } catch (e) {
         ((opts.verbose) ? console.error(e) : '');
@@ -363,28 +238,66 @@ var NodeBittrexApi = function(options) {
     };
   };
 
+  var setConnectedWs = function(markets, queryexchangecallback) {
+    wsclient.serviceHandlers.connected = function(connection) {
+      
+      // added code to get exchange state
+      var getexchangesummaryWS = function(market, queryexchangecallback) {
+        wsclient.call('CoreHub', 'QueryExchangeState', market).done(function(err, result) {
+          try {
+            if (err) {
+              //return console.error(err);
+              queryexchangecallback(err, result);
+            } else if (result) {
+              //console.log(JSON.stringify(result));
+              ((opts.verbose) ? console.log('Got exchange summary for ' + market) : '');
+              queryexchangecallback(null, result);
+            }
+          } 
+          catch (e) {
+            ((opts.verbose) ? console.error(e) : '');
+          }
+        });
+      };
+      
+      markets.forEach(function(market) {
+        wsclient.call('CoreHub', 'SubscribeToExchangeDeltas', market).done(function(err, result) {
+          if (err) {
+            return console.error(err);
+          }
+
+          if (result) {
+            getexchangesummaryWS(market, queryexchangecallback);
+            ((opts.verbose) ? console.log('Subscribed to ' + market) : '');
+          }
+        });
+
+      });   
+      
+      ((opts.verbose) ? console.log('Websocket connected') : '');
+    };
+  };
+
+
   return {
     options: function(options) {
       extractOptions(options);
     },
     websockets: {
-      client: function(callback, force) {
-        return connectws(callback, force);
+      client: function(callback) {
+        return connectws(callback);
       },
-      listen: function(callback, force) {
+      listen: function(callback) {
         connectws(function() {
-          websocketGlobalTickers = true;
-          websocketGlobalTickerCallback = callback;
-          setMessageReceivedWs();
-        }, force);
+          setMessageReceivedWs(callback);
+        });
       },
-      subscribe: function(markets, callback, force) {
+      subscribe: function(markets, callback, queryexchangecallback) {
         connectws(function() {
-          websocketMarkets = websocketMarkets.concat(markets);
-          websocketMarketsCallbacks.push(callback);
-          setMessageReceivedWs();
-        }, force);
-      }
+          setConnectedWs(markets, queryexchangecallback);
+          setMessageReceivedWs(callback);
+        });
+      } 
     },
     sendCustomRequest: function(request_string, callback, credentials) {
       var op;
@@ -419,12 +332,6 @@ var NodeBittrexApi = function(options) {
     },
     getcandles: function(options, callback) {
       publicApiCall(opts.baseUrlv2 + '/pub/market/GetTicks', callback, options);
-    },
-    getticks: function(options, callback) {
-      publicApiCall(opts.baseUrlv2 + '/pub/market/GetTicks', callback, options);
-    },
-    getlatesttick: function(options, callback) {
-      publicApiCall(opts.baseUrlv2 + '/pub/market/GetLatestTick', callback, options);
     },
     buylimit: function(options, callback) {
       credentialApiCall(opts.baseUrl + '/market/buylimit', callback, options);
@@ -473,13 +380,9 @@ var NodeBittrexApi = function(options) {
     },
     withdraw: function(options, callback) {
       credentialApiCall(opts.baseUrl + '/account/withdraw', callback, options);
-    },
-    getbtcprice: function(options, callback) {
-      publicApiCall(opts.baseUrlv2 + '/pub/currencies/GetBTCPrice', callback, options);
-    },
+    }
   };
-};
+}();
 
-module.exports = NodeBittrexApi();
+module.exports = NodeBittrexApi;
 
-module.exports.createInstance = NodeBittrexApi;
